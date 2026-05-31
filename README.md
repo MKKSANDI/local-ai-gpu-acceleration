@@ -1,5 +1,7 @@
 # Local AI GPU Acceleration Runtime
 
+> **Status: Work in progress.** This repository currently contains the low-level runtime foundation, benchmark harnesses, CUDA kernels, resident tensor pack tooling, and validation infrastructure. It is not yet a complete end-user local LLM application.
+
 Local AI GPU Acceleration Runtime is a Windows-first research and engineering project for running local language-model workloads efficiently on consumer NVIDIA GPUs. The current development target is an RTX 3060 desktop card with 12 GB of VRAM, CUDA compute capability 8.6, and the normal Windows WDDM driver model.
 
 The project focuses on a practical problem: local inference performance is usually limited by memory residency, host/device traffic, launch overhead, and scheduler behavior before it is limited by raw arithmetic throughput. This repository builds the runtime pieces needed to keep useful model state resident on the GPU, replay stable CUDA Graph workloads, measure memory pressure explicitly, and reject hidden host-memory fallback instead of letting the driver or operating system turn a GPU workload into a slow paging workload.
@@ -105,7 +107,7 @@ E:\AI project\packs
 E:\AI project\venvs
 ```
 
-The repository should stay source-only. Model files, GGUFs, generated resident packs, traces, benchmark outputs, build products, and third-party runtime downloads belong under the storage root. The `.gitignore` is configured to keep common model and build artifacts out of Git.
+The repository should stay source-only. Model files, GGUFs, resident packs, traces, benchmark outputs, build products, and third-party runtime downloads belong under the storage root. The `.gitignore` is configured to keep common model and build artifacts out of Git.
 
 Before downloading models or running large benchmarks, load the environment:
 
@@ -162,6 +164,129 @@ GGUF or resident pack metadata
 ```
 
 The project keeps the admission path and execution path close together. A benchmark row reports not only throughput and latency, but also the memory budget used to admit the run: resident weights, predicted and allocated KV, workspace, DMA, graph bytes, WDDM guard, usable bytes, required bytes, and any over-budget amount.
+
+## Performance Model and Math
+
+The runtime is built around a simple constraint: a decode step is only fast when most of the bytes needed for that step are already in VRAM. The scheduler therefore treats every request as a memory-admission problem before it treats it as a kernel-dispatch problem.
+
+The strict admission inequality is:
+
+```text
+B_weights + B_kv + B_workspace + B_dma + B_graph + B_guard <= B_vram_usable
+```
+
+Where:
+
+- `B_weights` is resident model tensor memory.
+- `B_kv` is predicted and allocated KV cache memory.
+- `B_workspace` is phase-local activation, logits, scratch, and auxiliary memory.
+- `B_dma` is staging or transfer workspace reserved for upload paths.
+- `B_graph` is captured CUDA Graph metadata and graph workspace pressure.
+- `B_guard` is the WDDM/display safety margin.
+- `B_vram_usable` is the measured free device memory after reserving the guard.
+
+If that inequality does not hold in strict mode, the runtime should reject, queue, shrink context, or select another plan. It should not silently rely on pageable host memory.
+
+### Token latency model
+
+For one decode step, the simplified latency model is:
+
+```text
+T_token ~= T_graph_launch + T_weight_reads + T_kv_reads_writes + T_math + T_sync + T_d2h_token
+```
+
+The design goal is to keep `T_graph_launch`, `T_sync`, and `T_d2h_token` small enough that the step is dominated by useful GPU work:
+
+```text
+T_math + T_weight_reads + T_kv_reads_writes >> T_graph_launch + T_sync + T_d2h_token
+```
+
+CUDA Graph replay attacks `T_graph_launch`. GPU-side sampling attacks `T_d2h_token`. Fixed arenas and stream-ordered allocation avoid allocator-driven synchronization inside `T_sync`.
+
+### Bandwidth model
+
+A resident model uses on-card bandwidth:
+
+```text
+T_resident_bytes ~= bytes_touched_per_token / BW_vram
+```
+
+A streamed or overspilled model pays for host/device movement:
+
+```text
+T_host_bytes ~= bytes_moved_per_token / BW_pcie + paging_overhead
+```
+
+For the RTX 3060 target, the practical rule is:
+
+```text
+BW_vram >> BW_pcie_effective
+```
+
+That is why a smaller fully resident model can outperform a larger partially streamed model. Once weights or hot KV pages move across the host link during every token, the GPU becomes gated by transfer behavior instead of local memory bandwidth.
+
+### KV cache footprint
+
+For a transformer-style KV cache, a useful first-order estimate is:
+
+```text
+B_kv = layers * tokens * kv_heads * head_dim * 2 * bytes_per_value
+```
+
+The factor of `2` accounts for key and value storage. Quantized KV modes reduce `bytes_per_value`; paged KV reduces fragmentation and makes admission/reclaim decisions easier to reason about.
+
+For page-based accounting:
+
+```text
+pages_required = ceil(tokens / tokens_per_page)
+B_kv_allocated = pages_required * bytes_per_page
+```
+
+The runtime can then track utilization:
+
+```text
+kv_utilization = B_kv_logical / B_kv_allocated
+```
+
+The target is high utilization without making page allocation so tight that reuse, prefix sharing, or graph replay stability becomes fragile.
+
+### Graph replay accounting
+
+The benchmark harness tracks the kernel envelope for a captured graph:
+
+```text
+K_graph = K_matvec + K_feedback + K_attention + K_ffn + K_ssm + K_output + K_scratch
+```
+
+The replay rate is:
+
+```text
+replays_per_second = steps / elapsed_seconds
+```
+
+The logical tensor launch rate inside a graph is:
+
+```text
+graph_kernel_rate = K_graph * replays_per_second
+```
+
+This is not the same thing as launching kernels individually from the CPU. It is a way to measure how much graph-captured work is being replayed while keeping CPU launch overhead out of the hot loop.
+
+### Throughput target
+
+For decode workloads, the user-facing throughput target is:
+
+```text
+tokens_per_second = 1000 / T_token_ms
+```
+
+Tail latency is just as important:
+
+```text
+jitter_ratio = p95_ms / p50_ms
+```
+
+A high average tokens/sec number is not enough if `jitter_ratio` is poor. Local interactive inference needs stable p50, p95, and p99 behavior so the desktop remains responsive while the GPU is under load.
 
 ## Repository Layout
 
