@@ -150,17 +150,23 @@ The runtime is organized around five ideas:
 
 At a high level:
 
-```text
-GGUF or resident pack metadata
-  -> tensor and residency planning
-  -> strict admission estimate
-  -> VRAM superallocator plan
-  -> setup-time H2D upload
-  -> CUDA Graph capture
-  -> CUDA Graph replay
-  -> GPU-side token update
-  -> token-sized D2H result
-  -> JSON benchmark telemetry
+```mermaid
+flowchart TD
+    A["Model package on E: drive<br/>GGUF or resident pack"] --> B["Read metadata<br/>tensor shapes, quant blocks, context plan"]
+    B --> C["Build residency estimate<br/>weights + KV + workspace + DMA + graph + guard"]
+    C --> D{"Fits strict VRAM budget?"}
+    D -- "No" --> E["Reject, queue, reduce context,<br/>or choose a smaller residency plan"]
+    D -- "Yes" --> F["Reserve VRAM arenas<br/>weights, KV pages, workspace, DMA"]
+    F --> G["Upload resident tensors<br/>pinned host staging to device memory"]
+    G --> H["Capture or select CUDA Graph bucket"]
+    H --> I["Prefill prompt<br/>write KV pages"]
+    I --> J["Decode loop<br/>replay graph per token"]
+    J --> K["GPU-side sampling<br/>choose next token ID"]
+    K --> L["Copy token ID to CPU<br/>detokenize and stream text"]
+    L --> M["Record telemetry<br/>latency, bytes moved, graph hits, page use"]
+    M --> N{"Generation complete?"}
+    N -- "No" --> J
+    N -- "Yes" --> O["Release or retain KV pages<br/>according to cache policy"]
 ```
 
 The project keeps the admission path and execution path close together. A benchmark row reports not only throughput and latency, but also the memory budget used to admit the run: resident weights, predicted and allocated KV, workspace, DMA, graph bytes, WDDM guard, usable bytes, required bytes, and any over-budget amount.
