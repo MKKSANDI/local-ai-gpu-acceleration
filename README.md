@@ -204,21 +204,30 @@ The project keeps the admission path and execution path close together. A benchm
 
 The runtime is built around a simple constraint: a decode step is only fast when most of the bytes needed for that step are already in VRAM. The scheduler therefore treats every request as a memory-admission problem before it treats it as a kernel-dispatch problem.
 
-The strict admission inequality is:
+The strict admission inequality is the main runtime gate:
 
-```text
-B_weights + B_kv + B_workspace + B_dma + B_graph + B_guard <= B_vram_usable
-```
+$$
+\begin{aligned}
+B_{\mathrm{required}} &=
+B_{\mathrm{weights}} +
+B_{\mathrm{KV}} +
+B_{\mathrm{workspace}} +
+B_{\mathrm{DMA}} +
+B_{\mathrm{graph}} +
+B_{\mathrm{guard}} \\
+B_{\mathrm{required}} &\leq B_{\mathrm{VRAM,usable}}
+\end{aligned}
+$$
 
 Where:
 
 - `B_weights` is resident model tensor memory.
-- `B_kv` is predicted and allocated KV cache memory.
+- `B_KV` is predicted and allocated KV cache memory.
 - `B_workspace` is phase-local activation, logits, scratch, and auxiliary memory.
-- `B_dma` is staging or transfer workspace reserved for upload paths.
+- `B_DMA` is staging or transfer workspace reserved for upload paths.
 - `B_graph` is captured CUDA Graph metadata and graph workspace pressure.
 - `B_guard` is the WDDM/display safety margin.
-- `B_vram_usable` is the measured free device memory after reserving the guard.
+- `B_VRAM,usable` is the measured free device memory after reserving the guard.
 
 If that inequality does not hold in strict mode, the runtime should reject, queue, shrink context, or select another plan. It should not silently rely on pageable host memory.
 
@@ -226,15 +235,28 @@ If that inequality does not hold in strict mode, the runtime should reject, queu
 
 For one decode step, the simplified latency model is:
 
-```text
-T_token ~= T_graph_launch + T_weight_reads + T_kv_reads_writes + T_math + T_sync + T_d2h_token
-```
+$$
+T_{\mathrm{token}}
+\approx
+T_{\mathrm{graph\ launch}} +
+T_{\mathrm{weight\ reads}} +
+T_{\mathrm{KV\ reads/writes}} +
+T_{\mathrm{math}} +
+T_{\mathrm{sync}} +
+T_{\mathrm{D2H\ token}}
+$$
 
 The design goal is to keep `T_graph_launch`, `T_sync`, and `T_d2h_token` small enough that the step is dominated by useful GPU work:
 
-```text
-T_math + T_weight_reads + T_kv_reads_writes >> T_graph_launch + T_sync + T_d2h_token
-```
+$$
+T_{\mathrm{math}} +
+T_{\mathrm{weight\ reads}} +
+T_{\mathrm{KV\ reads/writes}}
+\gg
+T_{\mathrm{graph\ launch}} +
+T_{\mathrm{sync}} +
+T_{\mathrm{D2H\ token}}
+$$
 
 CUDA Graph replay attacks `T_graph_launch`. GPU-side sampling attacks `T_d2h_token`. Fixed arenas and stream-ordered allocation avoid allocator-driven synchronization inside `T_sync`.
 
@@ -242,21 +264,26 @@ CUDA Graph replay attacks `T_graph_launch`. GPU-side sampling attacks `T_d2h_tok
 
 A resident model uses on-card bandwidth:
 
-```text
-T_resident_bytes ~= bytes_touched_per_token / BW_vram
-```
+$$
+T_{\mathrm{resident}}
+\approx
+\frac{\mathrm{bytes\ touched\ per\ token}}{BW_{\mathrm{VRAM}}}
+$$
 
 A streamed or overspilled model pays for host/device movement:
 
-```text
-T_host_bytes ~= bytes_moved_per_token / BW_pcie + paging_overhead
-```
+$$
+T_{\mathrm{host}}
+\approx
+\frac{\mathrm{bytes\ moved\ per\ token}}{BW_{\mathrm{PCIe,effective}}}
++ T_{\mathrm{paging}}
+$$
 
 For the RTX 3060 target, the practical rule is:
 
-```text
-BW_vram >> BW_pcie_effective
-```
+$$
+BW_{\mathrm{VRAM}} \gg BW_{\mathrm{PCIe,effective}}
+$$
 
 That is why a smaller fully resident model can outperform a larger partially streamed model. Once weights or hot KV pages move across the host link during every token, the GPU becomes gated by transfer behavior instead of local memory bandwidth.
 
@@ -264,24 +291,38 @@ That is why a smaller fully resident model can outperform a larger partially str
 
 For a transformer-style KV cache, a useful first-order estimate is:
 
-```text
-B_kv = layers * tokens * kv_heads * head_dim * 2 * bytes_per_value
-```
+$$
+B_{\mathrm{KV}}
+=
+L \cdot N_{\mathrm{tokens}} \cdot H_{\mathrm{KV}} \cdot D_{\mathrm{head}}
+\cdot 2 \cdot S_{\mathrm{value}}
+$$
 
 The factor of `2` accounts for key and value storage. Quantized KV modes reduce `bytes_per_value`; paged KV reduces fragmentation and makes admission/reclaim decisions easier to reason about.
 
 For page-based accounting:
 
-```text
-pages_required = ceil(tokens / tokens_per_page)
-B_kv_allocated = pages_required * bytes_per_page
-```
+$$
+P_{\mathrm{required}}
+=
+\left\lceil
+\frac{N_{\mathrm{tokens}}}{N_{\mathrm{tokens/page}}}
+\right\rceil
+$$
+
+$$
+B_{\mathrm{KV,allocated}}
+=
+P_{\mathrm{required}} \cdot B_{\mathrm{page}}
+$$
 
 The runtime can then track utilization:
 
-```text
-kv_utilization = B_kv_logical / B_kv_allocated
-```
+$$
+U_{\mathrm{KV}}
+=
+\frac{B_{\mathrm{KV,logical}}}{B_{\mathrm{KV,allocated}}}
+$$
 
 The target is high utilization without making page allocation so tight that reuse, prefix sharing, or graph replay stability becomes fragile.
 
@@ -289,21 +330,33 @@ The target is high utilization without making page allocation so tight that reus
 
 The benchmark harness tracks the kernel envelope for a captured graph:
 
-```text
-K_graph = K_matvec + K_feedback + K_attention + K_ffn + K_ssm + K_output + K_scratch
-```
+$$
+K_{\mathrm{graph}}
+=
+K_{\mathrm{matvec}} +
+K_{\mathrm{feedback}} +
+K_{\mathrm{attention}} +
+K_{\mathrm{FFN}} +
+K_{\mathrm{SSM}} +
+K_{\mathrm{output}} +
+K_{\mathrm{scratch}}
+$$
 
 The replay rate is:
 
-```text
-replays_per_second = steps / elapsed_seconds
-```
+$$
+R_{\mathrm{graph}}
+=
+\frac{N_{\mathrm{steps}}}{T_{\mathrm{elapsed}}}
+$$
 
 The logical tensor launch rate inside a graph is:
 
-```text
-graph_kernel_rate = K_graph * replays_per_second
-```
+$$
+K_{\mathrm{logical/sec}}
+=
+K_{\mathrm{graph}} \cdot R_{\mathrm{graph}}
+$$
 
 This is not the same thing as launching kernels individually from the CPU. It is a way to measure how much graph-captured work is being replayed while keeping CPU launch overhead out of the hot loop.
 
@@ -311,15 +364,19 @@ This is not the same thing as launching kernels individually from the CPU. It is
 
 For decode workloads, the user-facing throughput target is:
 
-```text
-tokens_per_second = 1000 / T_token_ms
-```
+$$
+\mathrm{tokens/sec}
+=
+\frac{1000}{T_{\mathrm{token,ms}}}
+$$
 
 Tail latency is just as important:
 
-```text
-jitter_ratio = p95_ms / p50_ms
-```
+$$
+J_{\mathrm{ratio}}
+=
+\frac{p95_{\mathrm{ms}}}{p50_{\mathrm{ms}}}
+$$
 
 A high average tokens/sec number is not enough if `jitter_ratio` is poor. Local interactive inference needs stable p50, p95, and p99 behavior so the desktop remains responsive while the GPU is under load.
 
