@@ -5,45 +5,46 @@
 ## Runtime Flowchart
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Arial, sans-serif", "primaryTextColor": "#111827", "lineColor": "#64748b"}}}%%
-flowchart LR
-    Request([Prompt request])
-    Files[(Model files on E drive)]
-    Plan[Plan GPU run]
-    Budget{Fits in VRAM?}
-    Tune[Reduce context or residency]
-    Retry{Fits now?}
-    Queue([Queue or reject])
-    Load[Load tensors into VRAM]
-    Graph[Run CUDA Graph]
-    Token[Sample token on GPU]
-    Stream[Stream text]
-    More{More tokens?}
-    Metrics[Save timing and memory metrics]
-    Cache[Keep or release KV cache]
-    Done([Done])
+%%{init: {"theme": "base", "flowchart": {"curve": "basis", "nodeSpacing": 45, "rankSpacing": 58}, "themeVariables": {"fontFamily": "Segoe UI, Arial, sans-serif", "primaryTextColor": "#f8fafc", "lineColor": "#94a3b8"}}}%%
+flowchart TB
+    Start(["Start: prompt request"])
+    Files[("Model files<br/>stored on E drive")]
+    Plan["Plan the GPU run<br/>read layout, context, tensors, and KV budget"]
+    Fit{"Does the plan fit<br/>inside usable VRAM?"}
+    Adjust["Adjust the run<br/>lower context or reduce residency"]
+    Recheck{"Adjusted plan fits?"}
+    Stop(["Queue or reject<br/>instead of spilling to RAM"])
+    Load["Load resident data<br/>move planned tensors into VRAM"]
+    Graph["Use CUDA Graph replay<br/>reuse or capture a stable graph bucket"]
+    Prefill["Process the prompt<br/>build the first KV cache pages"]
+    Decode["Generate on the GPU<br/>decode step and token sampling"]
+    Stream["Stream the token<br/>return text to the user"]
+    More{"Need another token?"}
+    Metrics["Record measurements<br/>latency, VRAM, transfers, graph hits"]
+    Cache["Apply cache policy<br/>keep or release KV pages"]
+    Done(["Done"])
 
-    Request --> Files --> Plan --> Budget
-    Budget -- "Yes" --> Load
-    Budget -- "No" --> Tune --> Retry
-    Retry -- "Yes" --> Load
-    Retry -- "No" --> Queue
-    Load --> Graph --> Token --> Stream --> More
-    More -- "Yes" --> Graph
+    Start --> Files --> Plan --> Fit
+    Fit -- "Yes" --> Load
+    Fit -- "No" --> Adjust --> Recheck
+    Recheck -- "Yes" --> Load
+    Recheck -- "No" --> Stop
+    Load --> Graph --> Prefill --> Decode --> Stream --> More
+    More -- "Yes" --> Decode
     More -- "No" --> Metrics --> Cache --> Done
 
-    classDef endpoint fill:#0f172a,stroke:#38bdf8,color:#ffffff,stroke-width:2px;
-    classDef storage fill:#ecfeff,stroke:#0891b2,color:#0f172a,stroke-width:1px;
-    classDef process fill:#f8fafc,stroke:#64748b,color:#111827,stroke-width:1px;
-    classDef decision fill:#fff7ed,stroke:#f97316,color:#111827,stroke-width:2px;
-    classDef gpu fill:#eef2ff,stroke:#4f46e5,color:#111827,stroke-width:2px;
-    classDef output fill:#ecfdf5,stroke:#059669,color:#111827,stroke-width:1px;
+    classDef endpoint fill:#0f172a,stroke:#38bdf8,color:#f8fafc,stroke-width:3px;
+    classDef storage fill:#164e63,stroke:#22d3ee,color:#ecfeff,stroke-width:2px;
+    classDef process fill:#1f2937,stroke:#94a3b8,color:#f8fafc,stroke-width:2px;
+    classDef decision fill:#451a03,stroke:#f59e0b,color:#fffbeb,stroke-width:3px;
+    classDef gpu fill:#312e81,stroke:#818cf8,color:#eef2ff,stroke-width:3px;
+    classDef output fill:#064e3b,stroke:#34d399,color:#ecfdf5,stroke-width:2px;
 
-    class Request,Queue,Done endpoint;
+    class Start,Stop,Done endpoint;
     class Files storage;
-    class Plan,Tune,Metrics,Cache process;
-    class Budget,Retry,More decision;
-    class Load,Graph,Token gpu;
+    class Plan,Adjust,Metrics,Cache process;
+    class Fit,Recheck,More decision;
+    class Load,Graph,Prefill,Decode gpu;
     class Stream output;
 ```
 
