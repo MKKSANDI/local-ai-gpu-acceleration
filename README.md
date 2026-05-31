@@ -6,42 +6,55 @@
 
 ```mermaid
 flowchart TD
-    Start([Start])
-    Model[/"Model package stored under E drive"/]
-    Metadata["Read GGUF or resident-pack metadata"]
-    Plan["Build tensor, context, and quantization plan"]
-    Estimate["Calculate VRAM requirement<br/>weights + KV + workspace + DMA + graph + WDDM guard"]
-    Fit{"Strict VRAM budget fits?"}
-    Alternative{"Can reduce context<br/>or choose smaller plan?"}
-    Replan["Create adjusted residency plan"]
-    Reject([Stop: reject or queue request])
-    Reserve["Reserve fixed VRAM arenas"]
-    Upload["Upload resident tensors through pinned staging"]
-    Bucket{"CUDA Graph bucket available?"}
-    Capture["Capture graph bucket"]
-    Select["Select existing graph bucket"]
-    Prefill["Run prefill and write KV pages"]
-    Decode["Replay decode graph"]
-    Sample["Sample next token on GPU"]
-    Copy[/"Copy token ID to CPU"/]
-    Stream["Detokenize and stream output"]
-    Done{"Generation complete?"}
-    Telemetry["Write telemetry<br/>latency, bytes moved, graph hits, page use"]
-    Cleanup["Release or retain KV pages"]
-    End([End])
+    Start([Start request])
 
-    Start --> Model --> Metadata --> Plan --> Estimate --> Fit
-    Fit -- "Yes" --> Reserve
-    Fit -- "No" --> Alternative
-    Alternative -- "Yes" --> Replan --> Estimate
-    Alternative -- "No" --> Reject
-    Reserve --> Upload --> Bucket
-    Bucket -- "No" --> Capture --> Prefill
-    Bucket -- "Yes" --> Select --> Prefill
-    Prefill --> Decode --> Sample --> Copy --> Stream --> Done
-    Done -- "No" --> Decode
-    Done -- "Yes" --> Telemetry --> Cleanup --> End
+    subgraph Prepare["1. Prepare the run"]
+        Model[/"Load model files from E drive"/]
+        ReadInfo["Read model layout"]
+        Plan["Choose context size and GPU plan"]
+        Estimate["Estimate VRAM needed"]
+        Fits{"Enough usable VRAM?"}
+        Smaller{"Can use a smaller plan?"}
+        Replan["Lower context or reduce residency"]
+        Queue([Queue or reject request])
+    end
+
+    subgraph LoadGpu["2. Load GPU memory"]
+        Reserve["Reserve fixed GPU memory areas"]
+        Upload["Move required tensors to VRAM"]
+        GraphReady{"Graph plan ready?"}
+        BuildGraph["Build CUDA Graph"]
+        ReuseGraph["Reuse CUDA Graph"]
+    end
+
+    subgraph Generate["3. Generate text"]
+        Prefill["Process the prompt"]
+        Decode["Run one GPU decode step"]
+        Sample["Pick the next token on GPU"]
+        Stream["Send token back as text"]
+        More{"Need more tokens?"}
+    end
+
+    subgraph Finish["4. Finish and measure"]
+        Metrics["Save timing and memory metrics"]
+        Cache["Keep or release KV cache"]
+        End([End])
+    end
+
+    Start --> Model --> ReadInfo --> Plan --> Estimate --> Fits
+    Fits -- "Yes" --> Reserve
+    Fits -- "No" --> Smaller
+    Smaller -- "Yes" --> Replan --> Estimate
+    Smaller -- "No" --> Queue
+    Reserve --> Upload --> GraphReady
+    GraphReady -- "No" --> BuildGraph --> Prefill
+    GraphReady -- "Yes" --> ReuseGraph --> Prefill
+    Prefill --> Decode --> Sample --> Stream --> More
+    More -- "Yes" --> Decode
+    More -- "No" --> Metrics --> Cache --> End
 ```
+
+In plain terms: the runtime checks whether the request fits in GPU memory first, loads only the planned resident data, replays GPU work for each token, streams text back, and records enough metrics to guide the next optimization pass.
 
 Local AI GPU Acceleration Runtime is a Windows-first research and engineering project for running local language-model workloads efficiently on consumer NVIDIA GPUs. The current development target is an RTX 3060 desktop card with 12 GB of VRAM, CUDA compute capability 8.6, and the normal Windows WDDM driver model.
 
