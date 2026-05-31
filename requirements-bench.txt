@@ -1,0 +1,4 @@
+numpy
+numba
+huggingface_hub
+cupy-cuda12x

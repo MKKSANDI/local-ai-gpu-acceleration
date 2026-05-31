@@ -1,0 +1,29 @@
+[storage]
+root = "E:\\AI project"
+models = "E:\\AI project\\models"
+hf_cache = "E:\\AI project\\hf-cache"
+build = "E:\\AI project\\build"
+benchmarks = "E:\\AI project\\benchmarks"
+traces = "E:\\AI project\\traces"
+tmp = "E:\\AI project\\tmp"
+
+[runtime]
+target_gpu = "NVIDIA GeForce RTX 3060"
+cuda_arch = "86"
+default_policy = "strict"
+host_spill_default = false
+wddm_guard_mib = 512
+
+[allocator]
+alignment_bytes = 256
+steady_state_device_allocations = false
+arenas = ["weights", "kv_pages", "workspace", "dma"]
+
+[scheduler]
+foreground_decode_priority = true
+prefill_may_starve_decode = false
+overflow_mode_requires_explicit_flag = true
+
+[model_target]
+repo_id = "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+filename = "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"

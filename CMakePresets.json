@@ -1,0 +1,55 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-ninja-cuda86-debug",
+      "displayName": "Windows Ninja CUDA 8.6 Debug",
+      "generator": "Ninja",
+      "binaryDir": "E:/AI project/build/rtx3060-runtime/windows-ninja-cuda86-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CUDA_ARCHITECTURES": "86"
+      }
+    },
+    {
+      "name": "windows-ninja-cuda86-release",
+      "displayName": "Windows Ninja CUDA 8.6 Release",
+      "generator": "Ninja",
+      "binaryDir": "E:/AI project/build/rtx3060-runtime/windows-ninja-cuda86-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "86"
+      }
+    },
+    {
+      "name": "windows-vs2022-cuda86-release",
+      "displayName": "Windows VS2022 CUDA 8.6 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "E:/AI project/build/rtx3060-runtime/windows-vs2022-cuda86-release",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "86"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-ninja-cuda86-debug",
+      "configurePreset": "windows-ninja-cuda86-debug"
+    },
+    {
+      "name": "windows-ninja-cuda86-release",
+      "configurePreset": "windows-ninja-cuda86-release"
+    },
+    {
+      "name": "windows-vs2022-cuda86-release",
+      "configurePreset": "windows-vs2022-cuda86-release",
+      "configuration": "Release"
+    }
+  ]
+}
