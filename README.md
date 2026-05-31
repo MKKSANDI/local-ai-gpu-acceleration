@@ -5,53 +5,46 @@
 ## Runtime Flowchart
 
 ```mermaid
-flowchart TD
-    Start([Start request])
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Arial, sans-serif", "primaryTextColor": "#111827", "lineColor": "#64748b"}}}%%
+flowchart LR
+    Request([Prompt request])
+    Files[(Model files on E drive)]
+    Plan[Plan GPU run]
+    Budget{Fits in VRAM?}
+    Tune[Reduce context or residency]
+    Retry{Fits now?}
+    Queue([Queue or reject])
+    Load[Load tensors into VRAM]
+    Graph[Run CUDA Graph]
+    Token[Sample token on GPU]
+    Stream[Stream text]
+    More{More tokens?}
+    Metrics[Save timing and memory metrics]
+    Cache[Keep or release KV cache]
+    Done([Done])
 
-    subgraph Prepare["1. Prepare the run"]
-        Model[/"Load model files from E drive"/]
-        ReadInfo["Read model layout"]
-        Plan["Choose context size and GPU plan"]
-        Estimate["Estimate VRAM needed"]
-        Fits{"Enough usable VRAM?"}
-        Smaller{"Can use a smaller plan?"}
-        Replan["Lower context or reduce residency"]
-        Queue([Queue or reject request])
-    end
+    Request --> Files --> Plan --> Budget
+    Budget -- "Yes" --> Load
+    Budget -- "No" --> Tune --> Retry
+    Retry -- "Yes" --> Load
+    Retry -- "No" --> Queue
+    Load --> Graph --> Token --> Stream --> More
+    More -- "Yes" --> Graph
+    More -- "No" --> Metrics --> Cache --> Done
 
-    subgraph LoadGpu["2. Load GPU memory"]
-        Reserve["Reserve fixed GPU memory areas"]
-        Upload["Move required tensors to VRAM"]
-        GraphReady{"Graph plan ready?"}
-        BuildGraph["Build CUDA Graph"]
-        ReuseGraph["Reuse CUDA Graph"]
-    end
+    classDef endpoint fill:#0f172a,stroke:#38bdf8,color:#ffffff,stroke-width:2px;
+    classDef storage fill:#ecfeff,stroke:#0891b2,color:#0f172a,stroke-width:1px;
+    classDef process fill:#f8fafc,stroke:#64748b,color:#111827,stroke-width:1px;
+    classDef decision fill:#fff7ed,stroke:#f97316,color:#111827,stroke-width:2px;
+    classDef gpu fill:#eef2ff,stroke:#4f46e5,color:#111827,stroke-width:2px;
+    classDef output fill:#ecfdf5,stroke:#059669,color:#111827,stroke-width:1px;
 
-    subgraph Generate["3. Generate text"]
-        Prefill["Process the prompt"]
-        Decode["Run one GPU decode step"]
-        Sample["Pick the next token on GPU"]
-        Stream["Send token back as text"]
-        More{"Need more tokens?"}
-    end
-
-    subgraph Finish["4. Finish and measure"]
-        Metrics["Save timing and memory metrics"]
-        Cache["Keep or release KV cache"]
-        End([End])
-    end
-
-    Start --> Model --> ReadInfo --> Plan --> Estimate --> Fits
-    Fits -- "Yes" --> Reserve
-    Fits -- "No" --> Smaller
-    Smaller -- "Yes" --> Replan --> Estimate
-    Smaller -- "No" --> Queue
-    Reserve --> Upload --> GraphReady
-    GraphReady -- "No" --> BuildGraph --> Prefill
-    GraphReady -- "Yes" --> ReuseGraph --> Prefill
-    Prefill --> Decode --> Sample --> Stream --> More
-    More -- "Yes" --> Decode
-    More -- "No" --> Metrics --> Cache --> End
+    class Request,Queue,Done endpoint;
+    class Files storage;
+    class Plan,Tune,Metrics,Cache process;
+    class Budget,Retry,More decision;
+    class Load,Graph,Token gpu;
+    class Stream output;
 ```
 
 In plain terms: the runtime checks whether the request fits in GPU memory first, loads only the planned resident data, replays GPU work for each token, streams text back, and records enough metrics to guide the next optimization pass.
