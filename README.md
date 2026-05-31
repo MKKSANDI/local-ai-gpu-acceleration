@@ -2,6 +2,47 @@
 
 > **Status: Work in progress.** This repository currently contains the low-level runtime foundation, benchmark harnesses, CUDA kernels, resident tensor pack tooling, and validation infrastructure. It is not yet a complete end-user local LLM application.
 
+## Runtime Flowchart
+
+```mermaid
+flowchart TD
+    Start([Start])
+    Model[/"Model package stored under E drive"/]
+    Metadata["Read GGUF or resident-pack metadata"]
+    Plan["Build tensor, context, and quantization plan"]
+    Estimate["Calculate VRAM requirement<br/>weights + KV + workspace + DMA + graph + WDDM guard"]
+    Fit{"Strict VRAM budget fits?"}
+    Alternative{"Can reduce context<br/>or choose smaller plan?"}
+    Replan["Create adjusted residency plan"]
+    Reject([Stop: reject or queue request])
+    Reserve["Reserve fixed VRAM arenas"]
+    Upload["Upload resident tensors through pinned staging"]
+    Bucket{"CUDA Graph bucket available?"}
+    Capture["Capture graph bucket"]
+    Select["Select existing graph bucket"]
+    Prefill["Run prefill and write KV pages"]
+    Decode["Replay decode graph"]
+    Sample["Sample next token on GPU"]
+    Copy[/"Copy token ID to CPU"/]
+    Stream["Detokenize and stream output"]
+    Done{"Generation complete?"}
+    Telemetry["Write telemetry<br/>latency, bytes moved, graph hits, page use"]
+    Cleanup["Release or retain KV pages"]
+    End([End])
+
+    Start --> Model --> Metadata --> Plan --> Estimate --> Fit
+    Fit -- "Yes" --> Reserve
+    Fit -- "No" --> Alternative
+    Alternative -- "Yes" --> Replan --> Estimate
+    Alternative -- "No" --> Reject
+    Reserve --> Upload --> Bucket
+    Bucket -- "No" --> Capture --> Prefill
+    Bucket -- "Yes" --> Select --> Prefill
+    Prefill --> Decode --> Sample --> Copy --> Stream --> Done
+    Done -- "No" --> Decode
+    Done -- "Yes" --> Telemetry --> Cleanup --> End
+```
+
 Local AI GPU Acceleration Runtime is a Windows-first research and engineering project for running local language-model workloads efficiently on consumer NVIDIA GPUs. The current development target is an RTX 3060 desktop card with 12 GB of VRAM, CUDA compute capability 8.6, and the normal Windows WDDM driver model.
 
 The project focuses on a practical problem: local inference performance is usually limited by memory residency, host/device traffic, launch overhead, and scheduler behavior before it is limited by raw arithmetic throughput. This repository builds the runtime pieces needed to keep useful model state resident on the GPU, replay stable CUDA Graph workloads, measure memory pressure explicitly, and reject hidden host-memory fallback instead of letting the driver or operating system turn a GPU workload into a slow paging workload.
@@ -148,26 +189,7 @@ The runtime is organized around five ideas:
 4. Captured CUDA Graph replay.
 5. Reference-checked benchmark iteration.
 
-At a high level:
-
-```mermaid
-flowchart TD
-    A["Model package on E: drive<br/>GGUF or resident pack"] --> B["Read metadata<br/>tensor shapes, quant blocks, context plan"]
-    B --> C["Build residency estimate<br/>weights + KV + workspace + DMA + graph + guard"]
-    C --> D{"Fits strict VRAM budget?"}
-    D -- "No" --> E["Reject, queue, reduce context,<br/>or choose a smaller residency plan"]
-    D -- "Yes" --> F["Reserve VRAM arenas<br/>weights, KV pages, workspace, DMA"]
-    F --> G["Upload resident tensors<br/>pinned host staging to device memory"]
-    G --> H["Capture or select CUDA Graph bucket"]
-    H --> I["Prefill prompt<br/>write KV pages"]
-    I --> J["Decode loop<br/>replay graph per token"]
-    J --> K["GPU-side sampling<br/>choose next token ID"]
-    K --> L["Copy token ID to CPU<br/>detokenize and stream text"]
-    L --> M["Record telemetry<br/>latency, bytes moved, graph hits, page use"]
-    M --> N{"Generation complete?"}
-    N -- "No" --> J
-    N -- "Yes" --> O["Release or retain KV pages<br/>according to cache policy"]
-```
+The flowchart at the top of this README shows the runtime path from model metadata through strict admission, fixed arena reservation, graph replay, token streaming, telemetry, and KV cleanup.
 
 The project keeps the admission path and execution path close together. A benchmark row reports not only throughput and latency, but also the memory budget used to admit the run: resident weights, predicted and allocated KV, workspace, DMA, graph bytes, WDDM guard, usable bytes, required bytes, and any over-budget amount.
 
