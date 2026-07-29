@@ -1,3 +1,11 @@
+## Support
+
+<p align="center">
+  <a href="https://buymeacoffee.com/thebigtk">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="50" width="210" alt="Buy Me A Coffee" />
+  </a>
+</p>
+
 # Local AI GPU Acceleration Runtime
 
 > **Status: Work in progress.** This repository currently contains the low-level runtime foundation, benchmark harnesses, CUDA kernels, resident tensor pack tooling, and validation infrastructure. It is not yet a complete end-user local LLM application.
